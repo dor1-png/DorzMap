@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="UTF-8">
+<title>מפת נושאים אינטראקטיבית</title>
+<style>
+body {
+  margin: 0;
+  height: 2000px;
+  background-color: #111;
+  font-family: sans-serif;
+  overflow: hidden;
+}
+
+#grid-layer {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background-image: linear-gradient(#222 1px, transparent 1px),
+                    linear-gradient(90deg, #222 1px, transparent 1px);
+  background-size: 50px 50px;
+  pointer-events: none;
+}
+
+#svg-layer {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+#node-layer {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+}
+
+.bubble {
+  position: absolute;
+  background-color: #00bfff;
+  color: #fff;
+  padding: 10px 15px;
+  border-radius: 10px;
+  cursor: grab;
+  font-weight: bold;
+  text-align: center;
+  white-space: nowrap;
+  transition: transform 0.2s ease;
+}
+.bubble:active { cursor: grabbing; }
+
+.color-picker {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  display: flex;
+  gap: 5px;
+}
+.color-picker div {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid #fff;
+}
+
+#export-btn {
+  position: fixed;
+  right: 10px;
+  top: 10px;
+  padding: 5px 10px;
+  background: #00bfff;
+  color: #111;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  z-index: 2000;
+}
+</style>
+</head>
+<body>
+<div id="grid-layer"></div>
+<svg id="svg-layer"></svg>
+<div id="node-layer"></div>
+<div id="mini-map"></div>
+<button id="export-btn">Export Map</button>
+
+<div class="color-picker">
+  <div style="background:red;" data-color="red"></div>
+  <div style="background:blue;" data-color="blue"></div>
+  <div style="background:darkgreen;" data-color="darkgreen"></div>
+  <div style="background:purple;" data-color="purple"></div>
+</div>
+
+<script>
+class BubbleManager {
+  constructor() {
+    this.bubbles = [];
+    this.lines = [];
+    this.svgLayer = document.getElementById('svg-layer');
+    this.nodeLayer = document.getElementById('node-layer');
+    this.selectedBubble = null;
+
+    // בחירת בועה
+    document.addEventListener('click', e => {
+      if(e.target.classList.contains('bubble')){
+        this.selectedBubble = this.bubbles.find(b => b.element === e.target);
+      } else {
+        this.selectedBubble = null;
+      }
+    });
+
+    // DEL / TAB
+    document.addEventListener('keydown', e => {
+      if(!this.selectedBubble) return;
+
+      if(e.key === 'Delete'){
+        e.preventDefault();
+        this.deleteBubble(this.selectedBubble);
+      }
+
+      if(e.key === 'Tab'){
+        e.preventDefault();
+        const parent = this.selectedBubble;
+        const child = this.createBubble("תת-נושא חדש", parent, parent.depth+1);
+        this.connectBubble(parent, child);
+      }
+    });
+
+    // צבעים
+    document.querySelectorAll('.color-picker div').forEach(div=>{
+      div.addEventListener('click', ()=> {
+        if(this.selectedBubble){
+          this.selectedBubble.element.style.backgroundColor = div.dataset.color;
+        }
+      });
+    });
+  }
+
+  createBubble(title, parent=null, depth=0){
+    const center = parent ? 
+      {x: parent.element.offsetLeft, y: parent.element.offsetTop + 100} :
+      {x: window.innerWidth/2 - 50, y: window.innerHeight/2 - 25};
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerText = title;
+    bubble.style.left = center.x + 'px';
+    bubble.style.top = center.y + 'px';
+    bubble.dataset.depth = depth;
+    bubble.contentEditable = true;
+
+    // Double click to edit
+    bubble.addEventListener('dblclick', ()=>{ bubble.focus(); });
+
+    this.makeDraggable(bubble);
+    this.nodeLayer.appendChild(bubble);
+
+    const bubbleObj = {element:bubble, parent, depth};
+    this.bubbles.push(bubbleObj);
+    return bubbleObj;
+  }
+
+  connectBubble(parentObj, childObj){
+    const line = document.createElementNS("http://www.w3.org/2000/svg","path");
+    line.setAttribute("stroke", "#00bfff");
+    line.setAttribute("stroke-width", "2");
+    line.setAttribute("fill", "transparent");
+    this.svgLayer.appendChild(line);
+    this.lines.push({line, parent: parentObj, child: childObj});
+
+    const updateLine = ()=>{
+      const px = parentObj.element.offsetLeft + parentObj.element.offsetWidth/2;
+      const py = parentObj.element.offsetTop + parentObj.element.offsetHeight/2;
+      const cx = childObj.element.offsetLeft + childObj.element.offsetWidth/2;
+      const cy = childObj.element.offsetTop + childObj.element.offsetHeight/2;
+      const mx = (px+cx)/2;
+      const my = (py+cy)/2;
+      line.setAttribute("d", `M ${px} ${py} Q ${mx} ${my} ${cx} ${cy}`);
+    };
+    const animate = ()=>{ updateLine(); requestAnimationFrame(animate); };
+    animate();
+  }
+
+  deleteBubble(bObj){
+    // Remove lines
+    this.lines = this.lines.filter(l=>{
+      if(l.parent===bObj || l.child===bObj){
+        l.line.remove();
+        return false;
+      }
+      return true;
+    });
+    // Remove bubble
+    bObj.element.remove();
+    this.bubbles = this.bubbles.filter(b=>b!==bObj);
+    if(this.selectedBubble===bObj) this.selectedBubble=null;
+  }
+
+  makeDraggable(bubble){
+    let offsetX, offsetY;
+    const onMouseMove = e=>{
+      bubble.style.left = (e.pageX - offsetX) + 'px';
+      bubble.style.top = (e.pageY - offsetY) + 'px';
+    };
+    bubble.addEventListener('mousedown', e=>{
+      offsetX = e.pageX - bubble.offsetLeft;
+      offsetY = e.pageY - bubble.offsetTop;
+      document.addEventListener('mousemove', onMouseMove);
+    });
+    document.addEventListener('mouseup', ()=>{ document.removeEventListener('mousemove', onMouseMove); });
+  }
+}
+
+const manager = new BubbleManager();
+manager.createBubble("נושא ראשי");
+
+// Export
+document.getElementById('export-btn').addEventListener('click', ()=>{ 
+  const html = `
+<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="UTF-8">
+<title>Exported Map</title>
+<style>${document.querySelector('style').innerHTML}</style>
+</head>
+<body>
+${document.getElementById('grid-layer').outerHTML}
+${document.getElementById('svg-layer').outerHTML}
+${document.getElementById('node-layer').outerHTML}
+</body>
+</html>`;
+  const blob = new Blob([html],{type:'text/html'}); 
+  const url = URL.createObjectURL(blob); 
+  const a = document.createElement('a'); 
+  a.href = url; 
+  a.download='map.html'; 
+  a.click(); 
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
